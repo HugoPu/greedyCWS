@@ -8,26 +8,27 @@ import re
 
 def initCemb(ndims,train_file,pre_trained,thr = 5.):
     f = open(train_file)
-    train_vocab = defaultdict(float)
+    train_vocab = defaultdict(float) # {character: number of occurrences}
     for line in f.readlines():
         sent = unicode(line.decode('utf8')).split()
         for word in sent:
             for character in word:
                 train_vocab[character]+=1
     f.close()
-    character_vecs = {}
+    character_vecs = {} # {character: vector}
     for character in train_vocab:
         if train_vocab[character]< thr:
             continue
         character_vecs[character] = np.random.uniform(-0.5/ndims,0.5/ndims,ndims)
+    # Update pre_trained character vectors character_vecs whose vectors are random
     if pre_trained is not None:
         pre_trained = gensim.models.Word2Vec.load(pre_trained)
         pre_trained_vocab = set([ unicode(w.decode('utf8')) for w in pre_trained.vocab.keys()])
         for character in pre_trained_vocab:
             character_vecs[character] = pre_trained[character.encode('utf8')]
-    Cemb = np.zeros(shape=(len(character_vecs)+1,ndims))
+    Cemb = np.zeros(shape=(len(character_vecs)+1,ndims)) # {id:vector}, plus 1 to add <unk> to it
     idx = 1
-    character_idx_map = dict()
+    character_idx_map = dict() # {character:id}
     for character in character_vecs:
         Cemb[idx] = character_vecs[character]
         character_idx_map[character] = idx

@@ -14,7 +14,9 @@ Sentence = namedtuple('Sentence',['score','score_expr','LSTMState','y','prevStat
 
 class CWS (object):
     def __init__(self,Cemb,character_idx_map,options):
-        model = dy.Model()
+        model = dy.Model() # Initialize model
+        # pre_gt = lr/(1+edecy ** t)
+        # gt = pre_gt + momentum * gt-1
         self.trainer = dy.MomentumSGDTrainer(model,options['lr'],options['momentum'],options['edecay']) # we use Momentum SGD
         self.params = self.initParams(model,Cemb,options)
         self.options = options
@@ -177,11 +179,14 @@ def dy_train_model(
     pre_trained = '../w2v/char_vecs_100',
     word_proportion = 0.5
 ):
-    options = locals().copy()
+    options = locals().copy() # Copy the local parameters to options
     print 'Model options:'
     for kk,vv in options.iteritems():
         print '\t',kk,'\t',vv
 
+    # Based on the train_file, get the most frequent characters to generate matrix
+    # Cemb: Character embedding matrix, {index, vector}
+    # character_idx_map: {character:id}
     Cemb, character_idx_map = initCemb(char_dims,train_file,pre_trained)
 
     cws = CWS(Cemb,character_idx_map,options)
