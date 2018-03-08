@@ -18,7 +18,7 @@ class CWS (object):
         # pre_gt = lr/(1+edecy ** t)
         # gt = pre_gt + momentum * gt-1
         self.trainer = dy.MomentumSGDTrainer(model,options['lr'],options['momentum'],options['edecay']) # we use Momentum SGD
-        self.params = self.initParams(model,Cemb,options)
+        self.params = self.initParams(model,Cemb,options) # Init parameters
         self.options = options
         self.model = model
         self.character_idx_map = character_idx_map
@@ -37,9 +37,16 @@ class CWS (object):
     def initParams(self,model,Cemb,options):
         # initialize the model parameters  
         params = dict()
+        ## ===== Lookup parameters
+        # Similar to parameters, but are representing a "lookup table"
+        # that maps numbers to vectors.
+        # These are used for embedding matrices.
+        # for example, this will have VOCAB_SIZE rows, each of DIM dimensions.
         params['embed'] = model.add_lookup_parameters(Cemb.shape)
         for row_num,vec in enumerate(Cemb):
             params['embed'].init_row(row_num, vec)
+
+        # Initialize 1 layer, word_dims of word vector, nhiddens of neural units, LSTM TNN
         params['lstm'] = dy.LSTMBuilder(1,options['word_dims'],options['nhiddens'],model)
         
         params['reset_gate_W'] = []
@@ -47,15 +54,20 @@ class CWS (object):
         params['com_W'] = []
         params['com_b'] = []
 
-        params['word_score_U'] = model.add_parameters(options['word_dims'])
-        params['predict_W'] = model.add_parameters((options['word_dims'],options['nhiddens']))
-        params['predict_b'] = model.add_parameters(options['word_dims'])
+        params['word_score_U'] = model.add_parameters(options['word_dims'])# The learnable parameter to judge if the word is legality
+        params['predict_W'] = model.add_parameters((options['word_dims'],options['nhiddens']))# The W to predict possibility in LSTM
+        params['predict_b'] = model.add_parameters(options['word_dims'])# The b to predict possibility in LSTM
         for wlen in xrange(1,options['max_word_len']+1):
+            # The W_r_l to determine which part of the character vectors should be retrieved, different word length use different W_r_l
+            # Since W_r_l is used to generate r, which will element-wise multiply cn, the shape of W_r_l should be (wlen*options['char_dims'],wlen*options['char_dims'])
             params['reset_gate_W'].append(model.add_parameters((wlen*options['char_dims'],wlen*options['char_dims'])))
+            # The b_r_l to determine which part of the character vectors should be retrieved, different word length use different W_r_l
             params['reset_gate_b'].append(model.add_parameters(wlen*options['char_dims']))
+            # Character vectors are integrated into their word representation using a weight matrix W_c_l
+            # Since the shape of W_r_l is (wlen*options['char_dims'],wlen*options['char_dims']), the shape of W_c_l is (options['word_dims'],wlen*options['char_dims'])
             params['com_W'].append(model.add_parameters((options['word_dims'],wlen*options['char_dims'])))
             params['com_b'].append(model.add_parameters(options['word_dims']))
-        params['<BoS>'] = model.add_parameters(options['word_dims'])
+        params['<BoS>'] = model.add_parameters(options['word_dims']) # Begin of state?
         return params
     
     def renew_cg(self):
@@ -71,7 +83,12 @@ class CWS (object):
         self.param_exprs = param_exprs
     
     def word_repr(self, char_seq, cembs):
-        # obtain the word representation when given its character sequence
+        """
+        obtain the word representation when given its character sequence
+        :param char_seq: character index sequence
+        :param cembs: character embedding sequence
+        :return:
+        """
 
         wlen = len(char_seq)
         if 'rgW%d'%wlen not in self.param_exprs:
@@ -80,20 +97,31 @@ class CWS (object):
             self.param_exprs['cW%d'%wlen] = dy.parameter(self.params['com_W'][wlen-1])
             self.param_exprs['cb%d'%wlen] = dy.parameter(self.params['com_b'][wlen-1])
 
-        chars = dy.concatenate(cembs)
+        chars = dy.concatenate(cembs)# [c1;c2...]
+        # reste_gate = sigmoid(W_r_l * chars + b_r_l), shape: (m,char_dim)
         reset_gate = dy.logistic(self.param_exprs['rgW%d'%wlen] * chars + self.param_exprs['rgb%d'%wlen])
+        # word = tanh(W_c_l * (reset_gate .* chars) + b_c_l)
         word = dy.tanh(self.param_exprs['cW%d'%wlen] * dy.cmult(reset_gate,chars) + self.param_exprs['cb%d'%wlen])
         if self.known_words is not None and tuple(char_seq) in self.known_words:
+            # Frequent word = (word + word_embed) / 2
             return (word + dy.lookup(self.params['word_embed'],self.known_words[tuple(char_seq)]))/2.
         return word
 
     def greedy_search(self, char_seq, truth = None, mu =0.):
+        """
+        :param char_seq: sentence [idx]
+        :param truth: sentence [character label]
+        :param mu:
+        :return:
+        """
         init_state = self.params['lstm'].initial_state().add_input(self.param_exprs['<bos>'])
         init_y = dy.tanh(self.param_exprs['pW'] * init_state.output() + self.param_exprs['pb'])
         init_score = dy.scalarInput(0.)
+        # An object only have properties
         init_sentence = Sentence(score=init_score.scalar_value(),score_expr=init_score,LSTMState =init_state, y= init_y , prevState = None, wlen=None, golden=True)
         
         if truth is not None:
+            # Make some feature to be zero, cembs:[cha_vector]
             cembs = [ dy.dropout(dy.lookup(self.params['embed'],char),self.options['dropout_rate']) for char in char_seq ]
         else:
             cembs = [dy.lookup(self.params['embed'],char) for char in char_seq ]
@@ -105,17 +133,20 @@ class CWS (object):
             now = None
             for wlen in xrange(1,min(idx,self.options['max_word_len'])+1): # generate word candidate vectors
                 # join segmentation sent + word
-                word = self.word_repr(char_seq[idx-wlen:idx], cembs[idx-wlen:idx])
+                word = self.word_repr(char_seq[idx-wlen:idx], cembs[idx-wlen:idx]) # Get (m, word_dim) word embedding
                 sent = agenda[idx-wlen]
 
+                # Drop out features
                 if truth is not None:
                     word = dy.dropout(word,self.options['dropout_rate'])
                 
+                # word score = u .* word
                 word_score = dy.dot_product(word,self.param_exprs['U'])
 
                 if truth is not None:
-                    golden =  sent.golden and truth[idx-1]==wlen
-                    margin = dy.scalarInput(mu*wlen if truth[idx-1]!=wlen else 0.)
+                    golden =  sent.golden and truth[idx-1]==wlen # If separate correctly
+                    margin = dy.scalarInput(mu*wlen if truth[idx-1]!=wlen else 0.)# Max-margin
+                    # Final score = max_margin_core + before_score + word_score + sentence_smoothness_score
                     score = margin + sent.score_expr + dy.dot_product(sent.y, word) + word_score
                 else:
                     golden = False
@@ -124,7 +155,7 @@ class CWS (object):
 
                 good = (now is None or now.score < score.scalar_value())
                 if golden or good:
-                    new_state = sent.LSTMState.add_input(word)
+                    new_state = sent.LSTMState.add_input(word) # Input x
                     new_y = dy.tanh(self.param_exprs['pW'] * new_state.output() + self.param_exprs['pb'])
                     new_sent = Sentence(score=score.scalar_value(),score_expr=score,LSTMState=new_state,y=new_y, prevState=sent, wlen=wlen, golden=golden)
                     if good:
@@ -189,14 +220,20 @@ def dy_train_model(
     # character_idx_map: {character:id}
     Cemb, character_idx_map = initCemb(char_dims,train_file,pre_trained)
 
+    # Initialize model, but not include computation graph
     cws = CWS(Cemb,character_idx_map,options)
 
+    # Load prams adn test
     if load_params is not None:
         cws.load(load_params)
         test(cws, dev_file, 'result')
 
+    # Word corpus quantification
+    # char_seq: [sentence[cha_idx]]
+    # truth: [sentence[char_label]]
     char_seq, _ , truth = prepareData(character_idx_map,train_file)
     
+    # Remove too long or null sentence
     if max_sent_len is not None:
         survived = []
         for idx,seq in enumerate(char_seq):
@@ -207,14 +244,21 @@ def dy_train_model(
     
     if word_proportion > 0:
         word_counter = Counter()
+        # Loop characters in sentence
         for chars,labels in zip(char_seq,truth):
+            # Loop labels from 1 to n
+            # Generate tuple word index combinations (idx)
+            # Count the number of occurrence
             word_counter.update(tuple(chars[idx-label:idx]) for idx,label in enumerate(labels,1))
+        # Put most frequent word in list
         known_word_count  = int(word_proportion*len(word_counter))
-        known_words =  dict(word_counter.most_common()[:known_word_count])
+        known_words =  dict(word_counter.most_common()[:known_word_count]) # {idx: number of occurrence}
         idx = 0
+        # Set know_words to {idx1:idx2}
         for word in known_words:
             known_words[word] = idx
             idx+=1
+        # we keep a short list H of the most frequent words, generate parameter matrix H
         cws.use_word_embed(known_words)
 
     n = len(char_seq)
@@ -225,11 +269,12 @@ def dy_train_model(
     nsamples = 0
     for eidx in xrange(max_epochs):
         idx_list = range(n)
+        # Random the sentences
         if shuffle_data:
             np.random.shuffle(idx_list)
 
         for idx in idx_list:
-            loss = cws.backward(char_seq[idx],truth[idx])
+            loss = cws.backward(char_seq[idx],truth[idx]) # Construct computation graph
             if np.isnan(loss):
                 print 'somthing went wrong, loss is nan.'
                 return

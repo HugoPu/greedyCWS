@@ -46,22 +46,31 @@ def SMEB(lens):
 def prepareData(character_idx_map,path,test=False):
     seqs,wlenss,idxss = [],[],[]
     f = open(path)
+    # Loop lines
     for line in f.readlines():
+        # Separate line with space
         sent = unicode(line.decode('utf8')).split()
         Left = 0
         for idx,word in enumerate(sent):
+            # If this "word" is a punctuation
             if len(re.sub('\W','',word,flags=re.U))==0:
                 if idx >Left:
+                    # Put this sentence in the sentence list, [sentence[character]]
                     seqs.append(list(''.join(sent[Left:idx])))
+                    # Put the length of word in the word length list [sentence[word length]]
                     wlenss.append([len(word) for word in sent[Left:idx]])
-                Left = idx+1
+                Left = idx+1 # If it is not a punctuation, pointer move right
+
+        # If there isn't any punctuation in the line
         if Left!=len(sent):
             seqs.append(list(''.join(sent[Left:])))
             wlenss.append([ len(word) for word in sent[Left:]])
+    # Convert character sequences to index sequences, which is based on the character_idx_map. [sentence[cha_idx]]
     seqs = [[ character_idx_map[character] if character in character_idx_map else 0 for character in seq] for seq in seqs]
     f.close()
     if test:
         return seqs
+    # Loop sentence, wlens: word length in one sentence
     for wlens in wlenss:
-        idxss.append(SMEB(wlens))
+        idxss.append(SMEB(wlens)) # [sentence[cha_label]]
     return seqs,wlenss,idxss

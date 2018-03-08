@@ -25,5 +25,5 @@ if __name__ == "__main__":
             lr = 0.2,
             edecay = 0.2, #msr,pku 0.2,0.1
             momentum = 0.5,           
-            word_proportion= 0.5       
+            word_proportion= 0.5   #we keep a short list H of the most frequent words
             )
