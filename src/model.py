@@ -111,7 +111,7 @@ class CWS (object):
         """
         :param char_seq: sentence [idx]
         :param truth: sentence [character label]
-        :param mu:
+        :param mu: Max margin score every character
         :return:
         """
         init_state = self.params['lstm'].initial_state().add_input(self.param_exprs['<bos>'])
@@ -131,6 +131,7 @@ class CWS (object):
 
         for idx, _ in enumerate(char_seq,1): # from left to right, character by character
             now = None
+            # Loop all segmentaion, and record the highest score segmentation and golden segmentation
             for wlen in xrange(1,min(idx,self.options['max_word_len'])+1): # generate word candidate vectors
                 # join segmentation sent + word
                 word = self.word_repr(char_seq[idx-wlen:idx], cembs[idx-wlen:idx]) # Get (m, word_dim) word embedding
@@ -144,29 +145,34 @@ class CWS (object):
                 word_score = dy.dot_product(word,self.param_exprs['U'])
 
                 if truth is not None:
-                    golden =  sent.golden and truth[idx-1]==wlen # If separate correctly
-                    margin = dy.scalarInput(mu*wlen if truth[idx-1]!=wlen else 0.)# Max-margin
+                    golden =  sent.golden and truth[idx-1]==wlen # If last time separate correctly and this time separately
+                    margin = dy.scalarInput(mu*wlen if truth[idx-1]!=wlen else 0.)# Max-margin, if golden thne 0, separeted even not golden, add score
                     # Final score = max_margin_core + before_score + word_score + sentence_smoothness_score
                     score = margin + sent.score_expr + dy.dot_product(sent.y, word) + word_score
                 else:
                     golden = False
                     score = sent.score_expr + dy.dot_product(sent.y, word) + word_score
 
-
+                # Even the separation isn't correct, the score will bigger
                 good = (now is None or now.score < score.scalar_value())
                 if golden or good:
-                    new_state = sent.LSTMState.add_input(word) # Input x
+                    new_state = sent.LSTMState.add_input(word) # Input word vectors, shape: (wlen, word_dim)
+                    # Prediction = tanh(W_p * h_i + b_p), h_i is the output of LSTM, should be the probabilities of the words
                     new_y = dy.tanh(self.param_exprs['pW'] * new_state.output() + self.param_exprs['pb'])
+                    # Update Sentence state
                     new_sent = Sentence(score=score.scalar_value(),score_expr=score,LSTMState=new_state,y=new_y, prevState=sent, wlen=wlen, golden=golden)
                     if good:
                         now = new_sent
                     if golden:
                         golden_sent = new_sent
 
+            # Record the highest score segmentation
             agenda.append(now)
+            # If the golden score is now the highest one
             if truth is not None and truth[idx-1]>0 and (not now.golden):
                 return (now.score_expr - golden_sent.score_expr)
 
+        # Return the highest score minus golden score
         if truth is not None:
             return (now.score_expr - golden_sent.score_expr)
 
@@ -185,8 +191,9 @@ class CWS (object):
 
     def backward(self, char_seq, truth):
         self.renew_cg()
+        # loss = the highest score - the goldren score
         loss = self.greedy_search(char_seq,truth,self.options['margin_loss_discount'])
-        res = loss.scalar_value()
+        res = loss.scalar_value()# convert to scalar
         loss.backward()
         return res
 
@@ -217,10 +224,10 @@ def dy_train_model(
 
     # Based on the train_file, get the most frequent characters to generate matrix
     # Cemb: Character embedding matrix, {index, vector}
-    # character_idx_map: {character:id}
+    # character_idx_map: {character:index}
     Cemb, character_idx_map = initCemb(char_dims,train_file,pre_trained)
 
-    # Initialize model, but not include computation graph
+    # Define parameters, trainer
     cws = CWS(Cemb,character_idx_map,options)
 
     # Load prams adn test
@@ -228,7 +235,7 @@ def dy_train_model(
         cws.load(load_params)
         test(cws, dev_file, 'result')
 
-    # Word corpus quantification
+    # Convert word corpus to sentence, index list
     # char_seq: [sentence[cha_idx]]
     # truth: [sentence[char_label]]
     char_seq, _ , truth = prepareData(character_idx_map,train_file)
@@ -242,6 +249,7 @@ def dy_train_model(
         char_seq =  [ char_seq[idx]  for idx in survived]
         truth = [ truth[idx] for idx in survived]
     
+    # Generate frequent word matrix H
     if word_proportion > 0:
         word_counter = Counter()
         # Loop characters in sentence
