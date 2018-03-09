@@ -14,10 +14,11 @@ Sentence = namedtuple('Sentence',['score','score_expr','LSTMState','y','prevStat
 
 class CWS (object):
     def __init__(self,Cemb,character_idx_map,options):
-        model = dy.Model() # Initialize model
+        model = dy.Model() # Initialize ParameterCollection
         # pre_gt = lr/(1+edecy ** t)
         # gt = pre_gt + momentum * gt-1
-        self.trainer = dy.MomentumSGDTrainer(model,options['lr'],options['momentum'],options['edecay']) # we use Momentum SGD
+        # edecay is not avaiable after dynet 1.0
+        self.trainer = dy.MomentumSGDTrainer(model,options['lr'],options['momentum']) # we use Momentum SGD
         self.params = self.initParams(model,Cemb,options) # Init parameters
         self.options = options
         self.model = model
@@ -43,6 +44,7 @@ class CWS (object):
         # These are used for embedding matrices.
         # for example, this will have VOCAB_SIZE rows, each of DIM dimensions.
         params['embed'] = model.add_lookup_parameters(Cemb.shape)
+        # Update vectors in the parameter
         for row_num,vec in enumerate(Cemb):
             params['embed'].init_row(row_num, vec)
 
@@ -289,6 +291,10 @@ def dy_train_model(
             nsamples += 1
             if nsamples % batch_size == 0:
                 cws.trainer.update(1.)
+
+        # edecay is not avaiable after dynet 1.0
+        # I have to manually update learning rate
+        cws.trainer.learning_rate /= 1 + options['edecay']
 
         cws.trainer.update_epoch(1.)
         end_time = time.time()
