@@ -137,7 +137,7 @@ class CWS (object):
             for wlen in xrange(1,min(idx,self.options['max_word_len'])+1): # generate word candidate vectors
                 # join segmentation sent + word
                 word = self.word_repr(char_seq[idx-wlen:idx], cembs[idx-wlen:idx]) # Get (m, word_dim) word embedding
-                sent = agenda[idx-wlen]
+                sent = agenda[idx-wlen] # If the segementation looks like this, get the last sentence which last segmentataion is in idx-wlen
 
                 # Drop out features
                 if truth is not None:
@@ -150,7 +150,7 @@ class CWS (object):
                     golden =  sent.golden and truth[idx-1]==wlen # If last time separate correctly and this time separately
                     margin = dy.scalarInput(mu*wlen if truth[idx-1]!=wlen else 0.)# Max-margin, if golden thne 0, separeted even not golden, add score
                     # Final score = max_margin_core + before_score + word_score + sentence_smoothness_score
-                    score = margin + sent.score_expr + dy.dot_product(sent.y, word) + word_score
+                    score = margin + sent.score_expr + dy.dot_product(sent.y, word) + word_score # Do separating if the segmentation looks ok
                 else:
                     golden = False
                     score = sent.score_expr + dy.dot_product(sent.y, word) + word_score
@@ -269,6 +269,7 @@ def dy_train_model(
             known_words[word] = idx
             idx+=1
         # we keep a short list H of the most frequent words, generate parameter matrix H
+        # Add known_words and param['word_embed'] as lookup_parameters
         cws.use_word_embed(known_words)
 
     n = len(char_seq)
@@ -283,20 +284,30 @@ def dy_train_model(
         if shuffle_data:
             np.random.shuffle(idx_list)
 
+        total_loss = 0
+        total_times = 0
+
         for idx in idx_list:
             loss = cws.backward(char_seq[idx],truth[idx]) # Construct computation graph
+            total_loss += loss
             if np.isnan(loss):
                 print 'somthing went wrong, loss is nan.'
                 return
             nsamples += 1
             if nsamples % batch_size == 0:
-                cws.trainer.update(1.)
+                cws.trainer.update()
+                total_times += batch_size
+                print '%s/%s, average loss:%s'%(total_times, n, total_loss/batch_size)
+                total_loss=0
 
         # edecay is not avaiable after dynet 1.0
         # I have to manually update learning rate
         cws.trainer.learning_rate /= 1 + options['edecay']
 
-        cws.trainer.update_epoch(1.)
+        total_times = 0
+
+        # Deprecated
+        # cws.trainer.update_epoch(1.)
         end_time = time.time()
         print 'Trained %s epoch(s) (%d samples) took %.lfs per epoch'%(eidx+1,nsamples,(end_time-start_time)/(eidx+1))       
         test(cws,dev_file,'../result/dev_result%d'%(eidx+1))

@@ -66,6 +66,7 @@ def prepareData(character_idx_map,path,test=False):
             seqs.append(list(''.join(sent[Left:])))
             wlenss.append([ len(word) for word in sent[Left:]])
     # Convert character sequences to index sequences, which is based on the character_idx_map. [sentence[cha_idx]]
+    # If the character is rare, the idx will be 0
     seqs = [[ character_idx_map[character] if character in character_idx_map else 0 for character in seq] for seq in seqs]
     f.close()
     if test:
